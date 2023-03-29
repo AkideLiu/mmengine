@@ -52,6 +52,8 @@ ConfigType = Union[Dict, Config, ConfigDict]
 ParamSchedulerType = Union[List[_ParamScheduler], Dict[str,
                                                        List[_ParamScheduler]]]
 OptimWrapperType = Union[OptimWrapper, OptimWrapperDict]
+from accelerate import Accelerator
+from accelerate.logging import get_logger
 
 
 @RUNNERS.register_module()
@@ -270,6 +272,8 @@ class Runner:
         experiment_name: Optional[str] = None,
         cfg: Optional[ConfigType] = None,
     ):
+
+        self.accelerator = Accelerator()
         self._work_dir = osp.abspath(work_dir)
         mmengine.mkdir_or_exist(self._work_dir)
 
@@ -375,6 +379,7 @@ class Runner:
         # Since `get_instance` could return any subclass of ManagerMixin. The
         # corresponding attribute needs a type hint.
         self.logger = self.build_logger(log_level=log_level)
+        self.logger = get_logger(__name__, log_level="INFO")
 
         # Collect and log environment information.
         self._log_env(env_cfg)
@@ -405,8 +410,11 @@ class Runner:
             model.setdefault('data_preprocessor', data_preprocessor)
         self.model = self.build_model(model)
         # wrap model
-        self.model = self.wrap_model(
-            self.cfg.get('model_wrapper_cfg'), self.model)
+        # self.model = self.wrap_model(
+        #     self.cfg.get('model_wrapper_cfg'), self.model)
+        #
+        self.model = self.accelerator.prepare_model(self.model)
+        # print(self.model)
 
         # get model name from the model class
         if hasattr(self.model, 'module'):
@@ -1670,6 +1678,13 @@ class Runner:
         # `build_optimizer` should be called before `build_param_scheduler`
         #  because the latter depends on the former
         self.optim_wrapper = self.build_optim_wrapper(self.optim_wrapper)
+        self.optim_wrapper.accelerator = self.accelerator
+        dataset = self.train_loop.dataloader.dataset
+        self.train_loop.dataloader = self.accelerator.prepare_data_loader(self.train_loop.dataloader)
+        self.train_loop.dataloader.dataset = dataset
+        dataset = self.val_loop.dataloader.dataset
+        self.val_loop.dataloader = self.accelerator.prepare_data_loader(self.val_loop.dataloader)
+        self.val_loop.dataloader.dataset = dataset
         # Automatically scaling lr by linear scaling rule
         self.scale_lr(self.optim_wrapper, self.auto_scale_lr)
 
@@ -2135,8 +2150,8 @@ class Runner:
             time=time.strftime('%Y%m%d_%H%M%S', time.localtime()),
             mmengine_version=mmengine.__version__ + get_git_hash())
 
-        if hasattr(self.train_dataloader.dataset, 'metainfo'):
-            meta.update(dataset_meta=self.train_dataloader.dataset.metainfo)
+        # if hasattr(self.train_dataloader.dataset, 'metainfo'):
+        #     meta.update(dataset_meta=self.train_dataloader.dataset.metainfo)
 
         if is_model_wrapper(self.model):
             model = self.model.module
